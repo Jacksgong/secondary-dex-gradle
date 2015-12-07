@@ -51,20 +51,28 @@ android {
 /**
  * Relies on the Bash Script to manipulate the Dexing of the correct classes.
  */
+ // 这里基于Project.afterEvaluate()方法，保证在Evaluate完成后被执行到
 afterEvaluate { project ->
     android.applicationVariants.each {
         variant ->
+            // 取到SDK的主目录，用于后面获取build tools目录下的dx工具所用
             String SDK_DIR = System.getenv("ANDROID_HOME")
             if (SDK_DIR == null) {
+                // 如果取不到就到local.properties中取sdk.dir的值
                 Properties props = new Properties()
                 props.load(new FileInputStream(project.rootProject.file("local.properties")))
                 SDK_DIR = props.get('sdk.dir');
             }
+            // 由于最终编译后所打的包包名默认会包含flavor
             String FLAVOR = "${variant.flavorName}"
+            // 用于获取当前版本dx工具绝对路径
             String BUILD_TYPE = "${variant.buildType.name}"
+            // 用于最终输出目录
             String ASSET_DIR = "${variant.mergeAssets.outputDir}"
+            // 获取dx工具绝对路径
             String DEX = "${SDK_DIR}/build-tools/${BUILD_TOOLS_VERSION}/dx"
             String BUILD_TOOL_DX = OperatingSystem.current().windows ? "${DEX}.bat" : "${DEX}"
+            // dex将会输出的目录名
             String EX_DIR = "classes"
 
             String LIB_NAME = ""
@@ -76,10 +84,12 @@ afterEvaluate { project ->
             String taskDexSplit = "dex${variant.name.capitalize()}Split"
             String taskDexSplit2 = taskDexSplit + "2"
 
+            // 作者用minifyEnabled，来判断是否是有混淆，其实也可以理解啦，因为minifyEnabled是基于混淆的
             if (variant.buildType.minifyEnabled) {
 
                 task("$taskDexSplit") << {
 
+                    // 工作目录，以proguard后的源码目录作为工作
                     String WORKDIR
                     if ("$FLAVOR" != "")
                         WORKDIR = "build/intermediates/classes-proguard/${FLAVOR}/${BUILD_TYPE}"
@@ -87,29 +97,37 @@ afterEvaluate { project ->
                         WORKDIR = "build/intermediates/classes-proguard/${BUILD_TYPE}"
 
                     task("unzipAndDeleteClassesJar", type: Copy) {
+                        // 将混淆后的classes.jar解压缩到outputDir
                         def zipFile = file("${WORKDIR}/classes.jar")
                         def outputDir = file("${WORKDIR}/${EX_DIR}")
                         from zipTree(zipFile)
                         into outputDir
+                        // 任务执行之前
                         doFirst {
                             outputDir.deleteDir()
                         }
+                        // 任务执行之后
                         doLast {
                             zipFile.delete()
                         }
                     }.execute()
 
                     task("extractLibraryClasses", type: Copy) {
+                        // 需要打到单独dex的包目录
                         String PACKAGE = "com/github/creativepsyco/secondarydex/bigmodule/lib"
+                        // proguard后源码所在目录
                         def source = file("${WORKDIR}/${EX_DIR}/${PACKAGE}/")
+                        // 将需要打到独立dex的文件拷贝到OUTPACKAGE目录
                         from source
                         into file("${WORKDIR}/OUTPACKAGE/${PACKAGE}/")
+                        // 任务执行完后
                         doLast {
                             source.deleteDir()
                         }
                     }.execute()
 
                     task("extractGuavaLibrary", type: Copy) {
+                        // 将com.google.**包名下的所有拷贝到需要打独立dex的目录下
                         String PACKAGE = "com/google"
                         def source = file("${WORKDIR}/${EX_DIR}/${PACKAGE}/")
                         from source
@@ -120,10 +138,12 @@ afterEvaluate { project ->
                     }.execute()
 
                     task("rebuildClassesJar", type: Exec) {
+                        // 将解压出来，抛离了需要独立dex文件的class重新打包回classes.jar
                         commandLine "jar", "cvf", "${WORKDIR}/classes.jar", "-C", "${WORKDIR}/${EX_DIR}/", "."
                     }.execute()
 
                     task("dexLibraries", type: Exec) {
+                        // 将需要独立dex的所有class文件，打dex并输出到assets目录
                         commandLine "${BUILD_TOOL_DX}", "--dex", "--output=${ASSET_DIR}", "${WORKDIR}/OUTPACKAGE"
                     }.execute()
                 }
@@ -137,13 +157,16 @@ afterEvaluate { project ->
 
             } else {
 
+                // 这是没有proguard的包
                 // For Debug simply remove the library from getting dex and create it
                 //----------------------- Extra Debug Step ----------------//
                 def libraryFiles = new ArrayList<?>()
                 def secondaryFile = new ArrayList<?>()
 
+                // 遍历并区分出需独立dex与主dex的文件
                 variant.dex.libraries.each {
                     File file ->
+                            // 不包含 lib/unspecified/classes.jar && 不包含guava
                         if (!file.absolutePath.contains("lib${File.separator}unspecified${File.separator}classes.jar")
                                 && !file.absolutePath.contains("guava")) {
                             libraryFiles.add(file)
@@ -154,12 +177,14 @@ afterEvaluate { project ->
                 variant.dex.libraries = libraryFiles
                 //----------------------- Extra Debug Step ----------------//
 
+                // 拆分dex任务
                 task("$taskDexSplit") << {
                     def arguments = new ArrayList<?>()
                     arguments.add("--dex")
                     arguments.add("--output=${ASSET_DIR}")
                     arguments.addAll(secondaryFile)
 
+                    // 将独立dex打好并放入asset中
                     task("dexLibraries", type: Exec) {
                         executable "${BUILD_TOOL_DX}"
                         args arguments
@@ -173,6 +198,7 @@ afterEvaluate { project ->
 
             task("$taskDexSplit2") << {
 
+                // 将拆分出来的dex进行压缩进game.zip并且删除assets目录下的classes.dex
                 task("zipDexedLibraries", type: Zip) {
                     destinationDir new File("${ASSET_DIR}")
                     archiveName 'game.zip'
@@ -182,7 +208,6 @@ afterEvaluate { project ->
                         file("${ASSET_DIR}/classes.dex").delete()
                     }
                 }.execute()
-
 
                 task("copyDexedLibrariesToApp", type: Copy) {
                     from "${ASSET_DIR}/game.zip"
